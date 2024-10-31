@@ -19,8 +19,6 @@ image_folder = 'data/'
 # Create directories if not already existing
 if not os.path.exists('result'):
     os.makedirs('result')
-if not os.path.exists('result1'):
-    os.makedirs('result1')
 
 if not os.path.exists('result/extracted_objects'):
     os.makedirs('result/extracted_objects')
