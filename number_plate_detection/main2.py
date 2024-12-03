@@ -6,12 +6,11 @@ import pytesseract
 from pytesseract import Output
 from PIL import Image
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe' 
-
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 def calculate_rotation_angle(approx, image_name, object_count):
     # Sort points by y value to find the lowest edge
     approx_sorted = sorted(approx[:, 0], key=lambda x: x[1])
-    approx = np.array(approx_sorted)  # Convert back to NumPy array
+    approx = np.array(approx_sorted)
 
     # Take the two lowest points to form the lowest edge
     pt1, pt2 = approx[2], approx[3]
@@ -19,18 +18,15 @@ def calculate_rotation_angle(approx, image_name, object_count):
     angle = math.degrees(math.atan2(dy, dx))
 
     # Adjust angle based on conditions
-    angle = adjust_angle(angle)
+    if -180 < angle < -135:
+        angle += 180
+    elif 135 < angle < 180:
+        angle -= 180
 
     # Visualize angle
     visualize_angle(approx, (pt1, pt2), angle, image_name, object_count)
     return angle
 
-def adjust_angle(angle):
-    if -180 < angle < -135:
-        angle += 180
-    elif 135 < angle < 180:
-        angle -= 180
-    return angle
 
 def visualize_angle(approx, edge_pts, angle, image_name, object_count):
     canvas = np.zeros((500, 500, 3), dtype=np.uint8)
@@ -48,43 +44,81 @@ def visualize_angle(approx, edge_pts, angle, image_name, object_count):
     visualization_path = f'result/angle_visualizations/{image_name}_angle_visualization_{object_count}.jpg'
     cv2.imwrite(visualization_path, canvas)
 
-def draw_and_save_green_border(image, contour, image_name, object_count):
-    bordered_image = image.copy()
-    cv2.polylines(bordered_image, [contour], isClosed=True, color=(0, 255, 0), thickness=3)
-    os.makedirs('result/bordered_images', exist_ok=True)
-    bordered_image_path = f'result/bordered_images/{image_name}_bordered_{object_count}.jpg'
-    cv2.imwrite(bordered_image_path, bordered_image)
-    return bordered_image
 
 def rotate_image_and_save(image, angle, image_name, object_count):
     (h, w) = image.shape[:2]
     center = (w // 2, h // 2)
+
+    # Calculate the new bounding dimensions after rotation
     rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated_image = cv2.warpAffine(image, rotation_matrix, (w, h), flags=cv2.INTER_LINEAR)
-    
+    cos = abs(rotation_matrix[0, 0])
+    sin = abs(rotation_matrix[0, 1])
+
+    # Compute new width and height of the rotated image
+    new_w = int(h * sin + w * cos)
+    new_h = int(h * cos + w * sin)
+
+    # Adjust the rotation matrix to account for the translation
+    rotation_matrix[0, 2] += (new_w / 2) - center[0]
+    rotation_matrix[1, 2] += (new_h / 2) - center[1]
+
+    # Create a white canvas with the new dimensions
+    rotated_image = cv2.warpAffine(
+        image,
+        rotation_matrix,
+        (new_w, new_h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(255, 255, 255)  # White background
+    )
+
+    # Save the rotated image
     os.makedirs('result/rotated_images', exist_ok=True)
     rotated_image_path = f'result/rotated_images/{image_name}_rotated_{object_count}.jpg'
     cv2.imwrite(rotated_image_path, rotated_image)
-    
+
     return rotated_image
 
-def extract_and_save_objects(image, image_name, object_count):
+
+def extract_objects(image, image_name):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, threshold = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    contours, _ = cv2.findContours(threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    gray_blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, threshold = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    morph_opening = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(morph_opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    process_contours(image, contours, image_name)
+
+
+def extract_final_plate(rotated_image, image_name, object_count):
+    gray = cv2.cvtColor(rotated_image, cv2.COLOR_BGR2GRAY)
+    gray_blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, threshold = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    morph_opening = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(morph_opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area > 10000:
-            x, y, w, h = cv2.boundingRect(contour)
-            ratio = w / h
-            if 1.2 <= ratio <= 1.8 or 3 <= ratio <= 7.5:
-                extracted_object = image[y:y + h, x:x + w]
-                if extracted_object.size > 0:
-                    os.makedirs('result/extracted_objects', exist_ok=True)
-                    extracted_path = f'result/extracted_objects/{image_name}_object_{object_count}.jpg'
-                    cv2.imwrite(extracted_path, extracted_object)
-                    object_count += 1
+        if area > 500:
+            approx = cv2.approxPolyDP(contour, 0.06 * cv2.arcLength(contour, True), True)
+            if len(approx) == 4:
+                x, y, w, h = cv2.boundingRect(approx)
+                ratio = w / h
+                if 0.8 <= ratio <= 1.8 or 3 <= ratio <= 7.5:
+                    final_plate_region = rotated_image[y:y+h, x:x+w]
+                    os.makedirs('result/final_plate', exist_ok=True)
+                    final_plate_path = f'result/final_plate/{image_name}_final_{object_count}.jpg'
+                    cv2.imwrite(final_plate_path, final_plate_region)
+                    return final_plate_region
+
+    # Fallback: Return the whole rotated image if no plate is found
+    os.makedirs('result/final_plate', exist_ok=True)
+    fallback_path = f'result/final_plate/{image_name}_final_fallback_{object_count}.jpg'
+    cv2.imwrite(fallback_path, rotated_image)
+    return rotated_image
+
 
 def process_contours(image, contours, image_name):
     object_count = 1
@@ -93,25 +127,34 @@ def process_contours(image, contours, image_name):
         if area > 10000:
             approx = cv2.approxPolyDP(contour, 0.06 * cv2.arcLength(contour, True), True)
             if len(approx) == 4:
-                bordered_image = draw_and_save_green_border(image, approx, image_name, object_count)
-                
-                angle = calculate_rotation_angle(approx, image_name, object_count)
-                if -45 < angle < 45:
-                    print(f"Rotating image {image_name} by {angle} degrees")
-                    rotated_image = rotate_image_and_save(bordered_image, angle, image_name, object_count)
-                    if rotated_image is not None and rotated_image.size > 0:
-                        extract_and_save_objects(rotated_image, image_name, object_count)
-                object_count += 1
+                x, y, w, h = cv2.boundingRect(contour)
+                ratio = w / h
+                if 0.8 <= ratio <= 1.8 or 3 <= ratio <= 7.5:
+                    # Draw green border for visualization
+                    bordered_image = image.copy()
+                    cv2.polylines(bordered_image, [approx], isClosed=True, color=(0, 255, 0), thickness=3)
+                    os.makedirs('result/bordered_images', exist_ok=True)
+                    bordered_path = f'result/bordered_images/{image_name}_bordered_{object_count}.jpg'
+                    cv2.imwrite(bordered_path, bordered_image)
 
-def extract_objects(image, image_name):
-    gray = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2GRAY)
-    gray_blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, threshold = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    morph_opening = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
-    contours, _ = cv2.findContours(morph_opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    # Crop the license plate region
+                    x, y, w, h = cv2.boundingRect(approx)
+                    license_plate_region = image[y:y+h, x:x+w]
+                    os.makedirs('result/license_plate_regions', exist_ok=True)
+                    cropped_path = f'result/license_plate_regions/{image_name}_cropped_{object_count}.jpg'
+                    cv2.imwrite(cropped_path, license_plate_region)
 
-    process_contours(image.copy(), contours, image_name)
+                    # Calculate rotation angle and visualize
+                    angle = calculate_rotation_angle(approx, image_name, object_count)
+
+                    # Rotate and save the cropped license plate image
+                    rotated_image = rotate_image_and_save(license_plate_region, angle, image_name, object_count)
+
+                    # Extract the final number plate from the rotated image
+                    extract_final_plate(rotated_image, image_name, object_count)
+
+                    object_count += 1
+
 
 def character_recog_tesseract(img):
     # Resize and preprocess for better OCR accuracy
@@ -241,26 +284,22 @@ def extract_and_compare_text(image_path):
             return method1_text
 
 # Main execution flow
-# Main execution flow
 image_folder = 'data/'
 for filename in os.listdir(image_folder):
     if filename.endswith(".jpg") or filename.endswith(".png"):
         image_path = os.path.join(image_folder, filename)
         image = cv2.imread(image_path)
         image_name, _ = os.path.splitext(filename)
-        
-        # Process the image to detect and save license plates
-        extract_objects(image, image_name)
-        
-        # Retrieve saved extracted license plates and run OCR
-        extracted_folder = 'result/extracted_objects/'
-        for extracted_file in os.listdir(extracted_folder):
-            if extracted_file.startswith(image_name):
-                extracted_path = os.path.join(extracted_folder, extracted_file)
-                
-                # Perform OCR on each license plate and print the detected text
-                license_plate_text = extract_and_compare_text(extracted_path)
-                print(f"Detected License Plate Text for {extracted_file}: {license_plate_text}")
 
+        # Process image to detect and process contours
+        extract_objects(image, image_name)
+
+        
+final_plate_folder = 'result/final_plate/'
+for object_path in os.listdir(final_plate_folder):
+    orc_text = extract_and_compare_text(final_plate_folder + object_path)
+    if orc_text:
+        print("This is orc text=======:",object_path, "=======:",orc_text)
+        
 cv2.destroyAllWindows()
 
