@@ -183,6 +183,10 @@ def extract_and_compare_text(image_path):
         else:
             return method1_text
 
+# Count of true and false
+count_true = 0
+count_false = 0
+
 # Main execution flow to process images from the folder
 for filename in os.listdir(image_folder):
     if filename.endswith(".jpg") or filename.endswith(".png"):
@@ -200,7 +204,14 @@ for filename in os.listdir(image_folder):
             name = object_path.split('/')[-1]
             orc_text = extract_and_compare_text(object_path)
             if orc_text:
-                print("This is orc text=======:",object_path, "=======:",orc_text)
+                file_name = object_path.split('/')[-1].split('_')[0] 
+                result = file_name == orc_text
+                if result:
+                    count_true += 1
+                else:
+                    count_false += 1
+                print(f"This is orc text======={object_path}======={orc_text}======={str(result):=>{100-len(object_path)-len(orc_text)-len('This is orc text=======:=======:=======:')}}")
+print(f"True: {count_true}, False: {count_false}")
 
 # Cleanup
 cv2.destroyAllWindows()

@@ -2,9 +2,6 @@ import cv2
 import numpy as np
 import os
 
-import cv2
-import numpy as np
-import os
 def extract_characters_with_borders(image, output_folder, base_filename, min_char=0.01, max_char=0.09):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -19,7 +16,7 @@ def extract_characters_with_borders(image, output_folder, base_filename, min_cha
         x, y, w, h = cv2.boundingRect(cnt)
         ratio_char = w / h
         char_area = w * h
-        if (min_char * roi_area < char_area < max_char * roi_area) and (0.25 < ratio_char < 0.7):
+        if (char_area > 1500) and (0.25 < ratio_char < 0.7):
             char_regions.append((x, y, w, h))
 
     # Filter by height consistency
@@ -31,8 +28,8 @@ def extract_characters_with_borders(image, output_folder, base_filename, min_cha
     # Custom sorting logic: sort by y (row) and x (column) with tolerance
     def sort_key(region):
         x, y, w, h = region
-        return (round(y / (0.1 * height)) * (0.1 * height),  # Group by row using a 10% height tolerance
-                round(x / (0.1 * width)) * (0.1 * width))    # Group by column using a 20% width tolerance
+        row_group = round(y / height)
+        return (row_group, x)
 
     char_regions = sorted(char_regions, key=sort_key)
 
@@ -57,7 +54,6 @@ def extract_characters_with_borders(image, output_folder, base_filename, min_cha
     bordered_path = os.path.join(bordered_folder, f"{base_filename}.jpg")
     cv2.imwrite(bordered_path, image)
 
-
 def process_with_borders_and_extraction(final_plate_folder, output_folder):
     for filename in os.listdir(final_plate_folder):
         if filename.endswith(".jpg") or filename.endswith(".png"):
@@ -68,7 +64,6 @@ def process_with_borders_and_extraction(final_plate_folder, output_folder):
             # Draw green borders and extract characters
             extract_characters_with_borders(plate_img, output_folder, base_filename)
 
-
 def load_templates(template_folder):
     """Load character templates from a folder."""
     templates = {}
@@ -77,53 +72,69 @@ def load_templates(template_folder):
             char = os.path.splitext(filename)[0]  # Extract character name (e.g., '0', 'A')
             template_path = os.path.join(template_folder, filename)
             template_img = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+
+            if template_img is None:
+                print(f"Warning: Failed to load template for '{filename}'. Skipping.")
+                continue
+
             _, template_img = cv2.threshold(template_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             templates[char] = template_img
-    return templates
 
+    if not templates:
+        raise ValueError("No valid templates loaded. Please check the template folder.")
+
+    return templates
 
 def match_template_to_character(image, templates):
     """Match a single character image to the templates and return the best match."""
+    if image is None:
+        print("Warning: Character image is None. Skipping matching.")
+        return "?"
+
     best_match = None
     max_score = -1
-    
+
     for char, template in templates.items():
         # Resize the character image to the same size as the template
         resized_image = cv2.resize(image, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
         result = cv2.matchTemplate(resized_image, template, cv2.TM_CCOEFF_NORMED)
         _, score, _, _ = cv2.minMaxLoc(result)
-        
+
         if score > max_score:
             max_score = score
             best_match = char
-    
-    return best_match
+
+    return best_match if best_match else "?"
 
 def read_characters_from_extracted_files(extracted_folder, template_folder):
     """Read characters from extracted character images using template matching."""
     templates = load_templates(template_folder)
     detected_texts = {}
-    
+
     for plate_folder in os.listdir(extracted_folder):
         plate_path = os.path.join(extracted_folder, plate_folder)
         if os.path.isdir(plate_path):  # Only process directories
             detected_text = ""
             for char_file in sorted(
                 os.listdir(plate_path), 
-                key=lambda f: int(f.split("character")[1].split(".")[0])
+                key=lambda f: f.split("character")[1].split(".")[0].split('_')[0]
             ):
                 char_path = os.path.join(plate_path, char_file)
                 char_img = cv2.imread(char_path, cv2.IMREAD_GRAYSCALE)
-                if char_img is not None:
-                    best_match = match_template_to_character(char_img, templates)
-                    if best_match:
-                        detected_text += best_match.split(".")[0]
-            
-            detected_texts[plate_folder] = detected_text
-            print(f"Detected text for {plate_folder}: {detected_text}")
-    
-    return detected_texts
+                if char_img is None:
+                    print(f"Warning: Failed to load character image '{char_file}'. Skipping.")
+                    detected_text += "?"
+                    continue
 
+                best_match = match_template_to_character(char_img, templates)
+                character =best_match.split('.')[0]
+                if character == 'DD':
+                    character = 'Đ'
+                detected_text += character
+
+            detected_texts[plate_folder] = detected_text
+
+    return detected_texts
 
 # Paths for the extracted characters and templates
 template_folder = "templates/"
@@ -133,4 +144,8 @@ output_folder = "result/"
 
 # Read characters from the extracted files
 process_with_borders_and_extraction(final_plate_folder, output_folder)
-read_characters_from_extracted_files(extracted_characters_folder, template_folder)
+detected_texts = read_characters_from_extracted_files(extracted_characters_folder, template_folder)
+
+# Print all detected texts
+for plate, text in detected_texts.items():
+    print(f"{plate}: {text}")
