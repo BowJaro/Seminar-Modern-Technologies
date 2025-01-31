@@ -1,3 +1,4 @@
+# Extracted images and use template matching to recognize characters
 import cv2
 import os
 import pytesseract
